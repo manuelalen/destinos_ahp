@@ -1,36 +1,48 @@
 import os
+from typing import Any, Dict, List, Tuple, Optional
+
+import pandas as pd
+import psycopg2
+from psycopg2 import sql
 import streamlit as st
 from dotenv import load_dotenv
 
-load_dotenv()  # solo para local
+# Para local
+load_dotenv()
 
-def get_secret(key: str, default: str = "") -> str:
+# ----------------------------
+# Config: st.secrets (Cloud) -> env (local)
+# ----------------------------
+def cfg(key: str, default: str = "") -> str:
     if key in st.secrets:
-        return str(st.secrets[key])
+        return str(st.secrets.get(key, default))
     return os.getenv(key, default)
 
-DSN = get_secret("SUPABASE_PG_DSN").strip()
-SCHEMA = get_secret("SUPABASE_SCHEMA", "prd_ahp").strip()
-TABLE = get_secret("SUPABASE_TABLE", "vw_destinos").strip()
-COL_UO = get_secret("COL_U_ORGANICA", "u_organica").strip()
-COL_AREA = get_secret("COL_AREA", "area").strip()
-COL_DISTANCIA = get_secret("COL_DISTANCIA", "dist_km_recta").strip()
+DSN = cfg("SUPABASE_PG_DSN", "").strip()
+SCHEMA = cfg("SUPABASE_SCHEMA", "prd_ahp").strip()
+TABLE = cfg("SUPABASE_TABLE", "vw_destinos").strip()
 
+COL_UO = cfg("COL_U_ORGANICA", "u_organica").strip()
+COL_AREA = cfg("COL_AREA", "area").strip()
+COL_DISTANCIA = cfg("COL_DISTANCIA", "dist_km_recta").strip()
 
 if not DSN:
-    st.error("Falta SUPABASE_PG_DSN en el .env")
+    st.error("Falta SUPABASE_PG_DSN (Secrets o .env)")
     st.stop()
 
 st.set_page_config(page_title="AHP · Destinos", layout="wide")
 st.title("📋 Destinos (Supabase)")
 
+# ----------------------------
+# DB helpers
+# ----------------------------
 @st.cache_resource
 def get_conn():
-    conn = psycopg2.connect(DSN, connect_timeout=15)
+    conn = psycopg2.connect(DSN, connect_timeout=20)
     conn.autocommit = True
     return conn
 
-def table_ident(schema: str, table: str) -> sql.Composed:
+def table_ident(schema: str, table: str):
     return sql.SQL("{}.{}").format(sql.Identifier(schema), sql.Identifier(table))
 
 def fetch_df(q: sql.SQL, params: Tuple[Any, ...] = ()) -> pd.DataFrame:
@@ -94,12 +106,11 @@ if not cols_meta:
     st.stop()
 
 col_names = [c["name"] for c in cols_meta]
-meta_by_name = {c["name"]: c for c in cols_meta}
 
 with st.sidebar:
     st.header("Filtros")
 
-    # -------- Filtro U_Orgánica: incluir/excluir
+    # u_organica
     if COL_UO in col_names:
         st.subheader(COL_UO)
         uo_values = fetch_distinct_values(COL_UO)
@@ -116,7 +127,7 @@ with st.sidebar:
         selected_uo = None
         st.warning(f"No existe la columna '{COL_UO}' en la tabla.")
 
-    # -------- Filtro Área: seleccionar áreas
+    # area
     if COL_AREA in col_names:
         st.subheader(COL_AREA)
         area_values = fetch_distinct_values(COL_AREA)
@@ -135,7 +146,7 @@ with st.sidebar:
 
     st.divider()
 
-    # -------- Filtro Distancia: rango (slider)
+    # distancia: slider rango
     if COL_DISTANCIA in col_names:
         st.subheader(COL_DISTANCIA)
         dmin, dmax = fetch_min_max(COL_DISTANCIA)
@@ -143,13 +154,13 @@ with st.sidebar:
             selected_dist_range = None
             st.info("No hay valores en distancia.")
         else:
-            dmin_r = float(dmin)
-            dmax_r = float(dmax)
+            dmin = float(dmin)
+            dmax = float(dmax)
             selected_dist_range = st.slider(
                 "Distancia (km) rango",
-                min_value=float(dmin_r),
-                max_value=float(dmax_r),
-                value=(float(dmin_r), float(dmax_r)),
+                min_value=dmin,
+                max_value=dmax,
+                value=(dmin, dmax),
                 step=1.0,
             )
     else:
@@ -215,11 +226,9 @@ where_sql = st.session_state.where_sql
 params = st.session_state.params
 
 # ----------------------------
-# Metrics (counts)
+# Metrics
 # ----------------------------
-total_count = fetch_one(
-    sql.SQL("SELECT count(*) FROM {t}").format(t=table_ident(SCHEMA, TABLE))
-)
+total_count = fetch_one(sql.SQL("SELECT count(*) FROM {t}").format(t=table_ident(SCHEMA, TABLE)))
 filtered_count = fetch_one(
     sql.SQL("SELECT count(*) FROM {t}").format(t=table_ident(SCHEMA, TABLE)) + where_sql,
     tuple(params),
@@ -248,7 +257,7 @@ st.caption(f"Página {page} · mostrando {len(df)} filas · offset {offset}")
 st.dataframe(df, use_container_width=True, height=520)
 
 # ----------------------------
-# Visual extras
+# Visuales rápidos
 # ----------------------------
 st.divider()
 st.subheader("Vistazos rápidos")
@@ -260,21 +269,21 @@ with v1:
         st.markdown("**Top u_organica (página)**")
         st.bar_chart(df[COL_UO].astype(str).fillna("NULL").value_counts().head(15))
     else:
-        st.info("No hay columna u_organica en esta vista.")
+        st.info("No hay columna u_organica.")
 
 with v2:
     if COL_AREA in df.columns:
         st.markdown("**Top áreas (página)**")
         st.bar_chart(df[COL_AREA].astype(str).fillna("NULL").value_counts().head(15))
     else:
-        st.info("No hay columna area en esta vista.")
+        st.info("No hay columna area.")
 
 with v3:
     # Histograma simple sobre una columna numérica de la página
-    num_cols = []
-    for c in cols_meta:
-        if c["data_type"].lower() in {"smallint", "integer", "bigint", "numeric", "real", "double precision", "decimal"}:
-            num_cols.append(c["name"])
+    num_cols = [
+        c["name"] for c in cols_meta
+        if c["data_type"].lower() in {"smallint", "integer", "bigint", "numeric", "real", "double precision", "decimal"}
+    ]
     if num_cols:
         coln = st.selectbox("Numérico (histograma en página)", num_cols, index=0)
         series = pd.to_numeric(df[coln], errors="coerce").dropna()
