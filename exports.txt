@@ -1,0 +1,4 @@
+export IDEALISTA_API_KEY="TU_API_KEY"
+export IDEALISTA_API_SECRET="TU_SECRET"
+
+Cuando tenga la key y el secret.
